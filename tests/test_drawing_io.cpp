@@ -54,6 +54,7 @@ int main() {
         std::string dxf = exportDrawingDXF(dwg);
         CHECK(dxf.find("ENTITIES") != std::string::npos);
         CHECK(dxf.find("LINE") != std::string::npos);
+        CHECK(dxf.find("\\U+") != std::string::npos); // 中文 -> \U+XXXX 转义
         CHECK(writeFileText(out + "/drawing.dxf", dxf));
 
         std::string pdf = exportDrawingPDF(dwg);

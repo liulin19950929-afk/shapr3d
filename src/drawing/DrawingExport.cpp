@@ -131,7 +131,31 @@ std::string exportDrawingDXF(const Drawing& d) {
         pair(20, t.pos.y);
         pair(30, 0);
         pair(40, t.height);
-        pairS(1, t.text.c_str());
+        // R12 文本为 ANSI 字节流: 非 ASCII 以 \U+XXXX 转义(AutoCAD 兼容写法)
+        {
+            std::string safe;
+            for (size_t i = 0; i < t.text.size();) {
+                unsigned char c = (unsigned char)t.text[i];
+                uint32_t u = c;
+                size_t n = 1;
+                if ((c & 0xE0) == 0xC0 && i + 1 < t.text.size()) { u = c & 0x1F; n = 2; }
+                else if ((c & 0xF0) == 0xE0 && i + 2 < t.text.size()) { u = c & 0x0F; n = 3; }
+                else if ((c & 0xF8) == 0xF0 && i + 3 < t.text.size()) { u = c & 0x07; n = 4; }
+                bool ok = n > 1;
+                for (size_t k = 1; ok && k < n; ++k)
+                    if (((unsigned char)t.text[i + k] & 0xC0) != 0x80) ok = false;
+                if (ok) {
+                    for (size_t k = 1; k < n; ++k) u = (u << 6) | ((unsigned char)t.text[i + k] & 0x3F);
+                    char ub[16];
+                    snprintf(ub, sizeof(ub), "\\U+%04X", u);
+                    safe += ub;
+                    i += n;
+                } else {
+                    safe += t.text[i++];
+                }
+            }
+            pairS(1, safe.c_str());
+        }
     }
     ent("ENDSEC");
     ent("EOF");

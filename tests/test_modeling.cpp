@@ -56,6 +56,32 @@ int main() {
         CHECK_NEAR(volumeOf(b.result), 40 * 30 * 12, 1e-4);
     });
 
+    runTest("草图弧: 线+半圆弧混合轮廓拉伸", [&] {
+        // 20x10 矩形 + 右端半圆(R5): 面积 = 200 + 12.5π, 拉伸 5
+        Document doc;
+        Body& b = doc.addBody();
+        SketchDef& sk = doc.addSketch(planeXY());
+        auto& p1 = sk.addPoint(0, 0, doc.newId());
+        auto& p2 = sk.addPoint(20, 0, doc.newId());
+        auto& p3 = sk.addPoint(20, 10, doc.newId());
+        auto& p4 = sk.addPoint(0, 10, doc.newId());
+        auto& c = sk.addPoint(20, 5, doc.newId());
+        sk.addLine(p1.id, p2.id, doc.newId());
+        sk.addArc(c.id, 5.0, -M_PI / 2, M_PI / 2, doc.newId()); // (20,0) -> (20,10) 经 (25,5)
+        sk.addLine(p3.id, p4.id, doc.newId());
+        sk.addLine(p4.id, p1.id, doc.newId());
+
+        Feature& ext = b.features.emplace_back();
+        ext.id = doc.newId();
+        ext.type = FeatureType::Extrude;
+        ext.sketchId = sk.id;
+        ext.p1 = 5;
+        doc.recomputeAll();
+        CHECK(b.result.IsNull() == false);
+        double expect = (200.0 + M_PI * 25.0 / 2.0) * 5.0;
+        CHECK_NEAR(volumeOf(b.result), expect, 1e-3);
+    });
+
     runTest("布尔运算: 差/并/交", [&] {
         Document doc;
         Feature f;
