@@ -28,11 +28,11 @@ static int g_fail = 0, g_total = 0;
         }                                                                           \
     } while (0)
 
-static void runTest(const char* name, const std::function<void()>& fn) {
+inline void runTest(const char* name, const std::function<void()>& fn) {
     fprintf(stderr, "---- 测试: %s ----\n", name);
-    size_t before = g_fail;
+    int before = g_fail;
     fn();
-    fprintf(stderr, "     %s (%zu/%d 通过)\n", g_fail == before ? "通过" : "存在失败",
+    fprintf(stderr, "     %s (%d/%d 通过)\n", g_fail == before ? "通过" : "存在失败",
             g_total - g_fail, g_total);
 }
 

@@ -1,6 +1,8 @@
 // demo_headless.cpp —— 无头端到端演示: 参数化建模 -> 测量 -> 工程图 -> 全格式导出
 // 在无 GPU/无显示环境下验证完整内核管线
 #include "TestMain.h"
+#include <cmath>
+
 #include "../src/kernel/Document.h"
 #include "../src/kernel/MeshBuilder.h"
 #include "../src/drawing/Drawing.h"
@@ -84,6 +86,19 @@ int main(int argc, char** argv) {
     CHECK(doc2.loadFromFile(out + "/flange.scn"));
     CHECK(!doc2.bodies[0].result.IsNull());
     fprintf(stderr, "\n[6] 工程文件 .scn 保存/加载 [OK]\n");
+
+    // 8) 参数化编辑(同步建模): 改中心孔半径 10 -> 14, 重算驱动模型更新
+    SketchDef* sk = doc.sketch(doc.bodies[0].features[1].sketchId);
+    CHECK(sk != nullptr);
+    CHECK(sk->circles.size() >= 1);
+    sk->circle(sk->circles[0].id)->r = 14.0;
+    doc.recomputeAll();
+    MassProps mpEdit = massProperties(doc.bodies[0].result, doc.bodies[0].material.density);
+    CHECK(mpEdit.ok);
+    double expect = mp.volumeMm3 - (M_PI * (14.0 * 14.0 - 10.0 * 10.0) * 8.0);
+    CHECK(std::fabs(mpEdit.volumeMm3 - expect) / expect < 1e-6);
+    fprintf(stderr, "\n[7] 参数化编辑: 中心孔 R10 -> R14, 体积 %.0f -> %.0f mm3 (解析差核验 [OK])\n",
+            mp.volumeMm3, mpEdit.volumeMm3);
 
     fprintf(stderr, "\n输出目录: %s\n", out.c_str());
     return testSummary();

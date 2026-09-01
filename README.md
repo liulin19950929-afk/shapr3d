@@ -104,6 +104,9 @@ cmake -B build -DBUILD_APP=OFF -DOpenCASCADE_DIR=... && cmake --build build
 ./build/bin/demo_headless out/   # 端到端演示, 输出 STEP/IGES/STL/OBJ/DXF/SVG/PDF
 ```
 
+当前状态: 101 项断言全部通过 (solver 19 / modeling 30 / drawing_io 35 / demo 21),
+STEP 往返体积偏差 0.000000%,PDF 内嵌中文 (Noto Sans SC 子集, OFL), 含参数化编辑(同步建模)端到端演示。
+
 ## 架构
 
 ```
