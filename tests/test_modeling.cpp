@@ -210,5 +210,29 @@ int main() {
         CHECK_NEAR(mp.centroid.X(), 0.0, 1e-9); // 中心在原点
     });
 
+    runTest("测量: 距离与面夹角", [&] {
+        // 两圆柱轴心距 = 40 (BRepExtrema)
+        TopoDS_Shape c1 = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 5.0, 10.0).Shape();
+        TopoDS_Shape c2 = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(40, 0, 0), gp_Dir(0, 0, 1)), 5.0, 10.0).Shape();
+        MeasureResult d = measureDistance(c1, c2);
+        CHECK(d.ok);
+        CHECK_NEAR(d.value, 30.0, 1e-6); // 面间最小距离 = 40 - 5 - 5
+        // 最近点集是两条线段 (z 任意), 只验证落在解集上
+        CHECK_NEAR(std::hypot(d.p1.X(), d.p1.Y()), 5.0, 1e-6);
+        CHECK(d.p1.Z() > -1e-6 && d.p1.Z() < 10.0 + 1e-6);
+        CHECK_NEAR(std::hypot(d.p2.X(), d.p2.Y()), 35.0, 1e-6);
+        CHECK(d.p2.Z() > -1e-6 && d.p2.Z() < 10.0 + 1e-6);
+        // 同体距离 = 0
+        MeasureResult d0 = measureDistance(c1, c1);
+        CHECK(d0.ok);
+        CHECK_NEAR(d0.value, 0.0, 1e-9);
+        // 平面夹角: XY 面 vs XZ 面 = 90°
+        BRepBuilderAPI_MakeFace fxy(gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)));
+        BRepBuilderAPI_MakeFace fxz(gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)));
+        MeasureResult a = measureAngle(fxy.Face(), fxz.Face());
+        CHECK(a.ok);
+        CHECK_NEAR(a.value, 90.0, 1e-6);
+    });
+
     return testSummary();
 }
