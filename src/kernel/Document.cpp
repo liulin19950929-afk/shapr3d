@@ -3,6 +3,9 @@
 #include "MeshBuilder.h"
 #include "../core/Json.h"
 #include "../core/ThreadPool.h"
+#include <BRepTools.hxx>
+#include <BRep_Builder.hxx>
+#include <sstream>
 #include <unordered_map>
 
 namespace cad {
@@ -295,6 +298,13 @@ std::string Document::serialize() const {
             auto fa = Value::mkArr();
             for (auto& p : f.faceAnchors) push(fa, serPnt(p));
             setV(fo, "faceAnchors", fa);
+            if (f.type == FeatureType::Imported && !f.result.IsNull()) {
+                // 导入体的几何不参与重算, 必须随文档内嵌保存 (ASCII BREP)
+                std::stringstream ss;
+                BRepTools::Write(f.result, ss, Standard_False, Standard_False,
+                                 TopTools_FormatVersion_VERSION_1);
+                set(fo, "importBrep", ss.str());
+            }
             push(fs, fo);
         }
         setV(bo, "features", fs);
@@ -389,6 +399,15 @@ bool Document::deserialize(const std::string& text) {
                             for (auto& e : *ea->arr) f.edgeAnchors.push_back(deserPnt(e));
                         if (auto fa = fo->get("faceAnchors"))
                             for (auto& e : *fa->arr) f.faceAnchors.push_back(deserPnt(e));
+                        if (auto ibv = fo->get("importBrep"); ibv && ibv->type == json::Value::String) {
+                            // 导入体: 从内嵌 BREP 恢复几何 (重算时 Imported 直接返回 result)
+                            std::stringstream ss(ibv->str);
+                            BRep_Builder builder;
+                            TopoDS_Shape sh;
+                            BRepTools::Read(sh, ss, builder);
+                            f.result = sh;
+                            f.dirty = false;
+                        }
                         f.dirty = true;
                         b.features.push_back(std::move(f));
                     }

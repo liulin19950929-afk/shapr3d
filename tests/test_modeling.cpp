@@ -1,6 +1,7 @@
 // test_modeling.cpp —— B-Rep 建模内核测试
 #include "TestMain.h"
 #include "../src/kernel/Document.h"
+#include <BRepPrimAPI_MakeCylinder.hxx>
 #include "../src/kernel/MeshBuilder.h"
 #include "../src/analysis/Measure.h"
 
@@ -135,6 +136,27 @@ int main() {
                    6.0;
         }
         CHECK(std::fabs(std::fabs(vol) - M_PI * 100 * 30) / (M_PI * 100 * 30) < 0.02);
+    });
+
+    runTest("导入体: 内嵌 BREP 序列化往返", [&] {
+        Document doc;
+        Body& b = doc.addBody("导入体");
+        Feature f;
+        f.id = doc.newId();
+        f.type = FeatureType::Imported;
+        f.name = "STEP导入";
+        f.result = BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape(); // 模拟外部导入的几何
+        b.features.push_back(f);
+        doc.recomputeAll();
+        double v0 = volumeOf(doc.bodies[0].result);
+        CHECK_NEAR(v0, M_PI * 25 * 10, 1e-3);
+
+        Document doc2;
+        CHECK(doc2.deserialize(doc.serialize()));
+        CHECK(doc2.bodies.size() == 1);
+        doc2.recomputeAll();
+        CHECK(!doc2.bodies[0].result.IsNull());
+        CHECK_NEAR(volumeOf(doc2.bodies[0].result), v0, 1e-6);
     });
 
     runTest("文档序列化往返", [&] {

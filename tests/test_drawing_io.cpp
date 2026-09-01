@@ -83,6 +83,23 @@ int main() {
         CHECK(std::fabs(p.Mass() - v0) / v0 < 1e-4);
     });
 
+    runTest("IGES 导入读回", [&] {
+        std::string err;
+        double v0 = 0;
+        {
+            GProp_GProps p;
+            BRepGProp::VolumeProperties(part, p);
+            v0 = p.Mass();
+        }
+        CHECK(io::exportBRep(part, out + "/roundtrip.iges", io::Format::IGES, err));
+        TopoDS_Shape back;
+        CHECK(io::importShape(out + "/roundtrip.iges", back, err));
+        CHECK(!back.IsNull());
+        GProp_GProps p;
+        BRepGProp::VolumeProperties(back, p);
+        CHECK(std::fabs(p.Mass() - v0) / v0 < 2e-3); // IGES 修复/缝合后容差放宽
+    });
+
     runTest("IGES / BREP / STL / OBJ 导出", [&] {
         std::string err;
         CHECK(io::exportBRep(part, out + "/part.iges", io::Format::IGES, err));
