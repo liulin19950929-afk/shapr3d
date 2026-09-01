@@ -1,0 +1,9 @@
+# 第三方(由 scripts/fetch-deps.sh 获取)
+third_party/
+# 构建产物
+build*/
+out/
+cmake-build-*/
+# 本地输出
+*.scn.bak
+screenshot_*.png

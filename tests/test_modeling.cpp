@@ -1,0 +1,166 @@
+// test_modeling.cpp —— B-Rep 建模内核测试
+#include "TestMain.h"
+#include "../src/kernel/Document.h"
+#include "../src/kernel/MeshBuilder.h"
+#include "../src/analysis/Measure.h"
+
+using namespace cad;
+
+static double volumeOf(const TopoDS_Shape& s) {
+    GProp_GProps p;
+    BRepGProp::VolumeProperties(s, p);
+    return p.Mass();
+}
+
+int main() {
+    runTest("基本体: 长方体/圆柱/球", [&] {
+        Feature f;
+        f.type = FeatureType::Box;
+        f.p1 = 10; f.p2 = 10; f.p3 = 10;
+        Document doc;
+        auto box = executeFeature(f, {}, {}, doc);
+        CHECK_NEAR(volumeOf(box), 1000.0, 1e-6);
+
+        f.type = FeatureType::Cylinder;
+        f.p1 = 5; f.p2 = 20;
+        auto cyl = executeFeature(f, {}, {}, doc);
+        CHECK_NEAR(volumeOf(cyl), M_PI * 25 * 20, 1e-3);
+
+        f.type = FeatureType::Sphere;
+        f.p1 = 8; f.p2 = 0;
+        auto sph = executeFeature(f, {}, {}, doc);
+        CHECK_NEAR(volumeOf(sph), 4.0 / 3.0 * M_PI * 512, 1e-2);
+    });
+
+    runTest("草图拉伸 + 特征链", [&] {
+        Document doc;
+        Body& b = doc.addBody();
+        SketchDef& sk = doc.addSketch(planeXY());
+        auto& p1 = sk.addPoint(0, 0, doc.newId());
+        auto& p2 = sk.addPoint(40, 0, doc.newId());
+        auto& p3 = sk.addPoint(40, 30, doc.newId());
+        auto& p4 = sk.addPoint(0, 30, doc.newId());
+        sk.addLine(p1.id, p2.id, doc.newId());
+        sk.addLine(p2.id, p3.id, doc.newId());
+        sk.addLine(p3.id, p4.id, doc.newId());
+        sk.addLine(p4.id, p1.id, doc.newId());
+
+        Feature& ext = b.features.emplace_back();
+        ext.id = doc.newId();
+        ext.type = FeatureType::Extrude;
+        ext.sketchId = sk.id;
+        ext.p1 = 12;
+        doc.recomputeAll();
+        CHECK(b.result.IsNull() == false);
+        CHECK_NEAR(volumeOf(b.result), 40 * 30 * 12, 1e-4);
+    });
+
+    runTest("布尔运算: 差/并/交", [&] {
+        Document doc;
+        Feature f;
+        f.type = FeatureType::Box; f.p1 = 20; f.p2 = 20; f.p3 = 20;
+        auto box = executeFeature(f, {}, {}, doc);
+        Feature c;
+        c.type = FeatureType::Cylinder; c.p1 = 4; c.p2 = 40;
+        auto cyl = executeFeature(c, {}, {}, doc);
+
+        Feature cut;
+        cut.type = FeatureType::Boolean; cut.opMode = 1; cut.targetBody = 77;
+        auto cutRes = executeFeature(cut, box, [&](Id) { return cyl; }, doc);
+        CHECK_NEAR(volumeOf(cutRes), 8000 - M_PI * 16 * 20, 1e-2); // 贯穿 20 高
+
+        Feature fuse;
+        fuse.type = FeatureType::Boolean; fuse.opMode = 0; fuse.targetBody = 77;
+        auto fuseRes = executeFeature(fuse, box, [&](Id) { return cyl; }, doc);
+        CHECK(volumeOf(fuseRes) > volumeOf(box) + 1e-9);
+
+        Feature common;
+        common.type = FeatureType::Boolean; common.opMode = 2; common.targetBody = 77;
+        auto comRes = executeFeature(common, box, [&](Id) { return cyl; }, doc);
+        CHECK_NEAR(volumeOf(comRes), M_PI * 16 * 20, 1e-2);
+    });
+
+    runTest("圆角/倒角", [&] {
+        Document doc;
+        Feature f;
+        f.type = FeatureType::Box; f.p1 = 10; f.p2 = 10; f.p3 = 10;
+        auto box = executeFeature(f, {}, {}, doc);
+
+        TopoDS_Shape fil;
+        std::string err;
+        // 竖直棱 (10, 10) 边上的锚点
+        CHECK(applyFillet(box, 2, {{10, 10, 5}}, fil, err));
+        CHECK(!fil.IsNull());
+        CHECK(volumeOf(fil) < 1000);
+
+        TopoDS_Shape ch;
+        CHECK(applyChamfer(box, 1, {{10, 10, 5}}, ch, err));
+        CHECK(!ch.IsNull());
+    });
+
+    runTest("抽壳", [&] {
+        Document doc;
+        Feature f;
+        f.type = FeatureType::Box; f.p1 = 30; f.p2 = 20; f.p3 = 10;
+        auto box = executeFeature(f, {}, {}, doc);
+        Feature sh;
+        sh.type = FeatureType::Shell;
+        sh.p1 = 2;
+        sh.faceAnchors = {{15, 10, 10}}; // 顶面
+        auto out = executeFeature(sh, box, {}, doc);
+        CHECK(!out.IsNull());
+        CHECK(volumeOf(out) < volumeOf(box));
+    });
+
+    runTest("网格剖分(并行)", [&] {
+        Document doc;
+        Feature f;
+        f.type = FeatureType::Cylinder; f.p1 = 10; f.p2 = 30;
+        auto cyl = executeFeature(f, {}, {}, doc);
+        MeshData md = buildMesh(cyl, 0.05);
+        CHECK(!md.verts.empty());
+        CHECK(md.verts.size() == md.normals.size());
+        CHECK(md.verts.size() % 9 == 0);
+        CHECK(!md.edgeLines.empty());
+        // 面数量: 圆柱 = 侧面 + 2 底
+        CHECK(md.faceCount.size() == 3);
+        // 体积抽查: 用网格体积近似
+        double vol = 0;
+        for (size_t i = 0; i < md.verts.size(); i += 9) {
+            const float* a = &md.verts[i];
+            const float* b = a + 3;
+            const float* c = b + 3;
+            vol += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) +
+                    a[2] * (b[0] * c[1] - b[1] * c[0])) /
+                   6.0;
+        }
+        CHECK(std::fabs(std::fabs(vol) - M_PI * 100 * 30) / (M_PI * 100 * 30) < 0.02);
+    });
+
+    runTest("文档序列化往返", [&] {
+        Document doc;
+        buildWelcomeDocument(doc);
+        std::string s = doc.serialize();
+        Document doc2;
+        CHECK(doc2.deserialize(s));
+        CHECK(doc2.bodies.size() == 1);
+        CHECK(doc2.sketches.size() == 2);
+        CHECK(doc2.bodies[0].features.size() == 3);
+        doc2.recomputeAll();
+        CHECK(!doc2.bodies[0].result.IsNull());
+    });
+
+    runTest("质量属性", [&] {
+        Document doc;
+        Feature f;
+        f.type = FeatureType::Box; f.p1 = 20; f.p2 = 10; f.p3 = 5;
+        auto box = executeFeature(f, {}, {}, doc);
+        MassProps mp = massProperties(box, 2.7);
+        CHECK(mp.ok);
+        CHECK_NEAR(mp.volumeMm3, 1000.0, 1e-6);
+        CHECK_NEAR(mp.massG, 2.7, 1e-6);
+        CHECK_NEAR(mp.centroid.X(), 0.0, 1e-9); // 中心在原点
+    });
+
+    return testSummary();
+}
