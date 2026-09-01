@@ -1,7 +1,12 @@
 // DrawingExport.cpp —— SVG / DXF(R12) / PDF 导出(矢量)
 #include "Drawing.h"
+#include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <vector>
+
+#include "PdfFontData.h"
 
 namespace cad {
 
@@ -137,7 +142,8 @@ std::string exportDrawingDXF(const Drawing& d) {
 namespace {
 
 struct PdfBuf {
-    std::string content;   // 页内容流
+    std::string content;            // 页内容流
+    std::vector<uint16_t> usedGids; // F2 用到的字形(生成 /W 数组)
     // y 翻转
     void moveTo(double x, double y, double H) {
         char b[96];
@@ -149,15 +155,48 @@ struct PdfBuf {
         snprintf(b, sizeof(b), "%.2f %.2f l\n", x, H - y);
         content += b;
     }
-    void text(double x, double y, double H, double size, const std::string& t) {
-        char b[256];
-        // 转义括号
-        std::string e;
-        for (char c : t) {
-            if (c == '(' || c == ')') e += '\\';
-            e += c;
+    // UTF-8 解码; 回调 (ucs4)
+    template <typename F>
+    static void utf8Each(const std::string& t, F&& cb) {
+        for (size_t i = 0; i < t.size();) {
+            unsigned char c = (unsigned char)t[i];
+            uint32_t u = c;
+            size_t n = 1;
+            if ((c & 0xE0) == 0xC0 && i + 1 < t.size()) { u = c & 0x1F; n = 2; }
+            else if ((c & 0xF0) == 0xE0 && i + 2 < t.size()) { u = c & 0x0F; n = 3; }
+            else if ((c & 0xF8) == 0xF0 && i + 3 < t.size()) { u = c & 0x07; n = 4; }
+            bool ok = true;
+            for (size_t k = 1; k < n; ++k) {
+                unsigned char cc = (unsigned char)t[i + k];
+                if ((cc & 0xC0) != 0x80) { ok = false; break; }
+                u = (u << 6) | (cc & 0x3F);
+            }
+            if (ok && n > 1) cb(u);
+            else if (ok) cb(u); // ASCII
+            i += ok ? n : 1;
         }
-        snprintf(b, sizeof(b), "BT /F1 %.1f Tf %.2f %.2f Td (%s) Tj ET\n", size, x, H - y, e.c_str());
+    }
+    double textWidth(const std::string& t, double size) {
+        double w = 0;
+        utf8Each(t, [&](uint32_t u) { w += pdffont::widthOf(pdffont::gidOf(u)) * size / 1000.0; });
+        return w;
+    }
+    void text(double x, double y, double H, double size, const std::string& t, int align = 0) {
+        // 测宽 -> 按 align 平移 (0左 1中 2右)
+        double w = textWidth(t, size);
+        if (align == 1) x -= w * 0.5;
+        else if (align == 2) x -= w;
+        // 转字形 id 串
+        std::string hex;
+        utf8Each(t, [&](uint32_t u) {
+            uint16_t g = pdffont::gidOf(u);
+            usedGids.push_back(g);
+            char hb[8];
+            snprintf(hb, sizeof(hb), "%04X", g);
+            hex += hb;
+        });
+        char b[64];
+        snprintf(b, sizeof(b), "BT /F2 %.1f Tf %.2f %.2f Td <%s> Tj ET\n", size, x, H - y, hex.c_str());
         content += b;
     }
 };
@@ -209,21 +248,42 @@ std::string exportDrawingPDF(const Drawing& d) {
         b.content += t;
     }
     b.content += "0.11 0.15 0.2 rg\n";
-    for (auto& t : d.texts) b.text(t.pos.x * K, t.pos.y * K + t.height * K, H, t.height * K, t.text);
+    for (auto& t : d.texts) b.text(t.pos.x * K, t.pos.y * K + t.height * K, H, t.height * K, t.text, t.align);
 
     // ---- 组装 PDF ----
-    std::string objs[6];
+    // 对象: 1 Catalog, 2 Pages, 3 Page, 4 F1(Helvetica), 5 Contents,
+    //       6 F2(Type0), 7 CIDFontType2, 8 FontDescriptor, 9 FontFile2
+    std::string objs[10];
     objs[1] = "<< /Type /Catalog /Pages 2 0 R >>\n";
     objs[2] = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>\n";
     objs[3] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + std::to_string(W) + " " + std::to_string(H) +
-              "] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\n";
+              "] /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>\n";
     objs[4] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\n";
     std::string stream = b.content;
     objs[5] = "<< /Length " + std::to_string(stream.size()) + " >>\nstream\n" + stream + "endstream\n";
 
-    std::string out = "%PDF-1.4\n";
-    size_t offsets[6] = {0};
-    for (int i = 1; i <= 5; ++i) {
+    // F2: Type0 + CIDFontType2(Identity-H), 覆盖实际用到的字形宽度
+    std::sort(b.usedGids.begin(), b.usedGids.end());
+    b.usedGids.erase(std::unique(b.usedGids.begin(), b.usedGids.end()), b.usedGids.end());
+    std::string wArr = "[";
+    for (uint16_t g : b.usedGids)
+        wArr += std::to_string(g) + " [" + std::to_string(pdffont::widthOf(g)) + "] ";
+    wArr += "]";
+    objs[6] = "<< /Type /Font /Subtype /Type0 /BaseFont /NotoSansSC /Encoding /Identity-H "
+              "/DescendantFonts [7 0 R] >>\n";
+    objs[7] = "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /NotoSansSC "
+              "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> "
+              "/CIDToGIDMap /Identity /W " + wArr + " /FontDescriptor 8 0 R >>\n";
+    objs[8] = "<< /Type /FontDescriptor /FontName /NotoSansSC /Flags 4 /FontBBox [-1000 -300 2100 1200] "
+              "/ItalicAngle 0 /Ascent 1160 /Descent -288 /CapHeight 710 /StemV 80 /FontFile2 9 0 R >>\n";
+    objs[9] = "<< /Length " + std::to_string(pdffont::kTtfN) + " /Length1 " + std::to_string(pdffont::kTtfN) +
+              " >>\nstream\n";
+    objs[9] += std::string(reinterpret_cast<const char*>(pdffont::kTtf), pdffont::kTtfN);
+    objs[9] += "\nendstream\n";
+
+    std::string out = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
+    size_t offsets[10] = {0};
+    for (int i = 1; i <= 9; ++i) {
         offsets[i] = out.size();
         char hdr[64];
         snprintf(hdr, sizeof(hdr), "%d 0 obj\n", i);
@@ -233,12 +293,12 @@ std::string exportDrawingPDF(const Drawing& d) {
     }
     size_t xref = out.size();
     char xb[64];
-    out += "xref\n0 6\n0000000000 65535 f \n";
-    for (int i = 1; i <= 5; ++i) {
+    out += "xref\n0 10\n0000000000 65535 f \n";
+    for (int i = 1; i <= 9; ++i) {
         snprintf(xb, sizeof(xb), "%010zu 00000 n \n", offsets[i]);
         out += xb;
     }
-    snprintf(xb, sizeof(xb), "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%zu\n%%%%EOF\n", xref);
+    snprintf(xb, sizeof(xb), "trailer\n<< /Size 10 /Root 1 0 R >>\nstartxref\n%zu\n%%%%EOF\n", xref);
     out += xb;
     return out;
 }

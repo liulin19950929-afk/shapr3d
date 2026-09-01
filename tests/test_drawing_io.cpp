@@ -60,6 +60,10 @@ int main() {
         CHECK(pdf.size() > 500);
         CHECK(pdf.substr(0, 8) == "%PDF-1.4");
         CHECK(pdf.find("%%EOF") != std::string::npos);
+        // 内嵌中文字体 (Type0/CIDFontType2/Identity-H + FontFile2 子集)
+        CHECK(pdf.find("/FontFile2") != std::string::npos);
+        CHECK(pdf.find("/Identity-H") != std::string::npos);
+        CHECK(pdf.find("/F2 ") != std::string::npos); // 文本走内嵌 CID 字体
         CHECK(writeFileText(out + "/drawing.pdf", pdf));
     });
 
